@@ -197,6 +197,38 @@ Firestore + object storage + AI providers + payment provider
 
 The server renders product pages and provides APIs for data, sharing, accounts, and file workflows. The browser provides interactive editing and previews. Private application source and deployment configuration are intentionally not published in this repository.
 
+### Data flow: create, save, share, and edit
+
+1. **Create or edit content.** The browser sends story/page content and its supported metadata to the Flask API. The server associates saved records with the relevant owner or guest session and writes application records to Firestore.
+2. **Upload a file.** The upload endpoint checks the requested type and metadata against the supported rules. For direct uploads, the server creates a short-lived, signed Cloudflare R2 upload URL; the browser uploads the bytes to that URL. The server then stores or receives the file reference used by the story or share workflow. The signed upload URL expires; it is not a permanent credential.
+3. **Open shared content.** A share code maps to a story, page selection, or file share. The server resolves that code, checks that it is valid and has not expired, and returns the content allowed by that share's scope. Share codes work like bearer links: anyone who obtains a valid code may be able to open the associated content.
+4. **Edit a shared story.** The API checks the share's edit permission and applicable story/page scope before accepting supported changes. View-only shares are intended for reading and do not grant editing through the share workflow.
+5. **Preview or download a file.** For supported file flows, the application resolves the file reference and serves a preview or download through its file routes or storage integration. Which steps run in the browser versus on the server depends on the tool and file type.
+
+### Where product data lives
+
+| Data | Primary location | What it is used for |
+| --- | --- | --- |
+| Story/page text and settings | Firestore application records | Content, page order, styles, ownership, timestamps, and associated sharing settings |
+| Share-code records and lookup data | Firestore | Resolving a code to its target, scope, and access mode |
+| Uploaded images, audio, and files | Cloudflare R2 object storage | Media bytes; application records keep references and related metadata |
+| Quick Share records | Firestore, with the uploaded object in R2 | File name, storage reference, ownership or deletion token as applicable, and expiry information |
+| Studio projects and media used in the standalone editor | Browser storage, including IndexedDB for supported project data | Local project recovery and media references in that browser profile |
+| User preferences | Browser storage and, for signed-in settings, account records where applicable | Preferences such as theme or audio settings |
+
+The exact fields can differ by feature and signed-in status. The table describes the production architecture at a high level, not a complete database schema.
+
+### What removal means
+
+- **Revoke a story share code:** Removes the code's active lookup/access mapping. It does not delete the story or file assets. Anyone who already copied or downloaded content keeps their copy.
+- **Delete a story or page:** Removes the relevant Firestore entry and its share-code mappings. The application checks whether referenced R2 assets are still used elsewhere before deleting an unreferenced object; when that reference check fails, the safer behavior is to retain the object and log the issue.
+- **Delete a Quick Share file:** The delete endpoint requires the associated deletion token, then removes the Quick Share record and requests deletion of its R2 object.
+- **Expire guest or temporary content:** Expiry is checked by the application, and cleanup jobs remove expired records and eligible unreferenced objects. A cleanup delay or storage-provider behavior may mean removal is not instantaneous.
+- **Delete a Studio project:** Studio project recovery data is stored in the browser's local storage area. Clearing browser/site data or using the product's project controls affects that local copy; this does not delete an exported file already downloaded elsewhere.
+- **PDF editing and export:** The editor works in the browser for the editing canvas. OCR and other server-assisted processing use application services for supported operations. The editor's temporary processing and retention can differ from saved story/file storage; see the [Privacy Policy](https://worldbyyou.com/privacy-policy) for the current product policy.
+
+Deleting a record or revoking a code cannot erase recipient downloads, screenshots, browser caches, or copies saved outside YourWorld.
+
 ---
 
 ## 🧰 Technology overview
@@ -237,9 +269,20 @@ These are continuing engineering efforts; actual speed depends on the network, d
 
 The public showcase deliberately excludes production source code, user data, database exports, API keys, payment secrets, and deployment credentials.
 
-The production product uses authenticated workflows for account-specific features and scoped access for shared content. Public viewing is limited to content exposed through its sharing workflow. Private routes and user data are not intended as public content. Payment events use server-side webhook handling.
+#### Security controls
 
-File processing varies by feature: PDFs are opened in the browser where supported, while OCR or server-assisted download flows may use temporary processing. Users should consult the live site's privacy policy for current file-handling details.
+- **Account boundaries:** Signed-in features use authenticated sessions and server-side ownership checks for account-specific actions.
+- **Scoped sharing:** Share codes resolve to particular content and its configured scope. Editable shares are checked separately from view-only shares.
+- **Upload safeguards:** Upload endpoints validate supported file metadata and limits. Direct uploads use short-lived signed URLs; storage credentials remain on the server.
+- **Deletion safeguards:** Quick Share deletion requires its deletion token. Story asset cleanup checks for remaining references before removing shared storage objects.
+- **Abuse and integrity controls:** Sensitive endpoints use request validation and rate limits; payment webhooks are handled and verified server-side.
+- **Search visibility:** Shared/private routes are excluded from public search indexing where configured. **Noindex is not access control**; the actual access boundary is the route's code/session checks.
+
+#### Important limits
+
+YourWorld should not be described as end-to-end encrypted. Share codes are access keys, not encryption, and code-based sharing means a recipient can pass the code along. Some uploaded media is referenced by object URLs, so users should treat shared links and codes as private credentials. Revoking access prevents future access through that code after the change takes effect, but cannot recall files already copied or downloaded.
+
+The live site's [Privacy Policy](https://worldbyyou.com/privacy-policy) explains the current data categories and processing practices. File processing and retention differ by feature and may also depend on external infrastructure. Do not upload highly sensitive information unless the live product's current policy and controls meet your needs.
 
 ---
 
